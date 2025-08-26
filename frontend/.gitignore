@@ -1,23 +1,36 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Archivo .gitignore para el Frontend
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# Dependencias de Node.js
+# Se reconstruyen con 'npm install'
+node_modules/
 
-# testing
-/coverage
+# Carpeta de build de producción
+# Se genera con 'npm run build'
+build/
 
-# production
-/build
+# Logs de desarrollo
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# misc
-.DS_Store
+# Archivos de Entorno (¡CRÍTICO!)
+# Contiene claves de API y configuraciones locales.
+.env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Reportes de cobertura de tests
+coverage/
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+
+# Configuración de IDEs
+.vscode/
+.idea/
