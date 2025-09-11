@@ -3,14 +3,18 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const fs =require('fs');
+const path = require('path');
 const multer = require('multer');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { Pinecone } = require('@pinecone-database/pinecone'); 
 const mammoth = require("mammoth");
-// Importaciones de nuestro proyecto
+const xlsx = require('xlsx');
+const pdf = require('pdf-parse');
+const axios = require('axios');
+const FormData = require('form-data');
+const Chat = require('./models/Chat'); 
 const { protect } = require('./middleware/authMiddleware');
 const userRoutes = require('./routes/userRoutes');
-const Chat = require('./models/Chat');
 const GlobalDocument = require('./models/GlobalDocuments');
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -19,7 +23,8 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = [
   'https://oy-s-frontend-git-master-brandon-gonsales-projects.vercel.app',
   'https://oy-s-frontend-git-develop-brandon-gonsales-projects.vercel.app',               
-  'http://localhost:3000'
+  'http://localhost:3000',
+  "https://oy-s-frontend.vercel.app"
 ];
 
 const corsOptions = {
@@ -49,6 +54,7 @@ const GOOGLE_AI_STUDIO_API_KEY = process.env.GOOGLE_AI_STUDIO_API_KEY;
 const genAI = new GoogleGenerativeAI(GOOGLE_AI_STUDIO_API_KEY);
 const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
 const generativeModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const visionGenerativeModel = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
 
 // <-- CORRECCIÓN: Inicializar Pinecone
 const pinecone = new Pinecone({
@@ -57,94 +63,22 @@ const pinecone = new Pinecone({
 const pineconeIndex = pinecone.index('chat-rag'); 
 console.log("Conectado y listo para usar el índice de Pinecone: 'chat-rag'.");
 
-const COMPATIBILIZATION_AUDIT_PROMPT = process.env.COMPATIBILIZATION_AUDIT_PROMPT;
+const CONVERSION_SERVICE_URL = process.env.CONVERSION_SERVICE_URL;
 
 // --- MONTAR RUTAS DE USUARIO ---
 app.use('/api/users', userRoutes);
 
 // --- LÓGICA DE DETECCIÓN DE CONTEXTO POR EMBEDDINGS ---
 const SIMILARITY_THRESHOLD = 0.9;
-const CONTEXT_TRIGGERS = [
-    {
-        contextName: 'compatibilizacionFacultades',
-        triggerPhrase: 'compatibilizacion de facultades',
-        responseMessage: 'Hola, soy tu agente especialista en Compatibilización de Facultades. ¿Cómo puedo ayudarte hoy?',
-        promptEnvVar: 'PROMPT_COMPATIBILIZACION_FACULTADES' // <-- NUEVO
-    },
-    {
-        contextName: 'consolidadoFacultades',
-        triggerPhrase: 'consolidado de facultades',
-        responseMessage: 'Hola, soy tu agente especialista en Consolidado de Facultades. ¿Cómo puedo ayudarte hoy',
-        promptEnvVar: 'PROMPT_CONSOLIDADO_FACULTADES' // <-- NUEVO
-    },
-    {
-        contextName: 'compatibilizacionAdministrativo',
-        triggerPhrase: 'compatibilizacion administrativo',
-        responseMessage: 'Hola, soy tu agente especialista en Compatibilización Administrativa. ¿Cómo puedo ayudarte hoy',
-        promptEnvVar: 'PROMPT_COMPATIBILIZACION_ADMINISTRATIVO' // <-- NUEVO
-    },
-    {
-        contextName: 'consolidadoAdministrativo',
-        triggerPhrase: 'consolidado administrativo',
-        responseMessage: 'Hola, soy tu agente especialista en Consolidado Administrativo. ¿Cómo puedo ayudarte hoy',
-        promptEnvVar: 'PROMPT_CONSOLIDADO_ADMINISTRATIVO' // <-- NUEVO
-    },
-    {
-        contextName: 'miscellaneous', // Este no tiene tarea especial
-        triggerPhrase: 'volver a chat',
-        responseMessage: 'Bienvenido de vuelta. Soy un modelo de Inteligencia Artificial entrenado para asistirte en tus tareas. ¿Qué quieres hacer hoy?'
-        // Sin promptEnvVar
-    }
-];
-let triggerEmbeddings = {};
-(async () => {
-    try {
-        console.log("Pre-calculando embeddings para las frases de activación de contexto...");
-        for (const trigger of CONTEXT_TRIGGERS) {
-            const result = await embeddingModel.embedContent(trigger.triggerPhrase);
-            triggerEmbeddings[trigger.contextName] = {
-                embedding: result.embedding.values,
-                responseMessage: trigger.responseMessage
-            };
-        }
-        console.log("Embeddings de contexto calculados exitosamente.");
-    } catch (error) {
-        console.error("Error crítico: no se pudo pre-calcular los embeddings de activación.", error);
-    }
-})();
+
+
 
 
 const upload = multer({ dest: 'uploads/' }).array('files', 10);
 
 // --- SUBPROCESOS Y FUNCIONES AUXILIARES ---
 
-async function detectAndHandleContextSwitch(chat, userQuery, res) {
-    const userQueryEmbedding = await getEmbedding(userQuery);
-    for (const contextName in triggerEmbeddings) {
-        const trigger = triggerEmbeddings[contextName];
-        const similarity = cosineSimilarity(userQueryEmbedding, trigger.embedding);
-        if (similarity > SIMILARITY_THRESHOLD && chat.activeContext !== contextName) {
-            try {
-                console.log(`✅ Intención detectada en [${chat._id}]: Cambiar contexto a -> ${contextName}`);
-                const updatedChat = await Chat.findByIdAndUpdate(chat._id, {
-                    activeContext: contextName,
-                    $push: { messages: { $each: [
-                        { sender: 'user', text: userQuery },
-                        { sender: 'ai', text: trigger.responseMessage }
-                    ]}}
-                }, { new: true });
 
-                res.status(200).json({ updatedChat });
-                return true;
-            } catch (dbError) {
-                console.error("Error al cambiar el contexto del chat:", dbError);
-                res.status(500).json({ message: "Error al procesar el cambio de contexto." });
-                return true;
-            }
-        }
-    }
-    return false;
-}
 
 function getDocumentsForActiveContext(chat) {
     const contextKey = chat.activeContext;
@@ -174,132 +108,224 @@ const findRelevantChunksAcrossDocuments = async (queryEmbedding, documentIds, to
     }
 };
 
-async function handleSpecializedAgentTask(chat, userQuery, res) {
-    const activeContextName = chat.activeContext;
-    console.log(`✅ Tarea Especializada del Agente [${activeContextName}] iniciada para el chat [${chat._id}]`);
-    
-    try {
-        // 1. OBTENER EL PROMPT CORRECTO DESDE LA CONFIGURACIÓN
-        const triggerConfig = CONTEXT_TRIGGERS.find(t => t.contextName === activeContextName);
-        const agentPrompt = process.env[triggerConfig.promptEnvVar];
 
-        if (!agentPrompt) {
-            throw new Error(`El prompt para el agente '${activeContextName}' no está configurado en .env.`);
-        }
 
-        // 2. OBTENER LOS DOCUMENTOS CORRECTOS: los del contexto activo + los globales
-        const agentDocumentIds = getDocumentsForActiveContext(chat);
-        const globalDocs = await GlobalDocument.find({});
-        const globalDocumentIds = globalDocs.map(doc => doc.documentId);
-        const relevantDocumentIds = [...agentDocumentIds, ...globalDocumentIds];
-
-        let contextString = "No se encontró contexto relevante en los documentos.";
-        if (relevantDocumentIds.length > 0) {
-            const queryEmbedding = await getEmbedding(userQuery);
-            const relevantChunks = await findRelevantChunksAcrossDocuments(queryEmbedding, relevantDocumentIds, 50);
-            
-            if (relevantChunks.length > 0) {
-                contextString = "--- INICIO DEL CONTEXTO EXTRAÍDO DE DOCUMENTOS ---\n" + relevantChunks.join("\n---\n") + "\n--- FIN DEL CONTEXTO ---";
-            }
-        }
-
-        // 3. CONSTRUIR EL PROMPT FINAL Y LLAMAR A LA IA
-        const finalPrompt = `${agentPrompt}\n\n${contextString}\n\nBasado en lo anterior, responde a la siguiente petición del usuario: "${userQuery}"`;
-        
-        const chatSession = generativeModel.startChat();
-        const result = await chatSession.sendMessage(finalPrompt);
-        const botText = result.response.text();
-
-        // 4. GUARDAR Y RESPONDER
-        const updatedChat = await Chat.findByIdAndUpdate(chat._id, {
-            $push: { messages: { $each: [
-                { sender: 'user', text: userQuery },
-                { sender: 'ai', text: botText }
-            ]}}
-        }, { new: true });
-
-        res.status(200).json({ updatedChat });
-
-    } catch (error) {
-        console.error(`Error durante la tarea del agente [${activeContextName}]:`, error);
-        res.status(500).json({ message: `Ocurrió un error al ejecutar la tarea del agente.` });
-    }
-}
-
-// --- OTRAS FUNCIONES AUXILIARES
+// Función para extraer texto de PDFs con Gemini (nuestro fallback)
 async function extractTextWithGemini(filePath, mimetype) {
+    console.log("Fallback: Intentando extracción de PDF con Gemini Vision...");
     const fileBuffer = fs.readFileSync(filePath);
-
-    // 1. Prepara el archivo para el SDK. El SDK se encarga de la codificación Base64.
-    const filePart = {
-        inlineData: {
-            data: fileBuffer.toString("base64"),
-            mimeType: mimetype,
-        },
-    };
-
-    const prompt = "Extrae todo el texto de este documento. Devuelve únicamente el texto plano, sin ningún formato adicional.";
-
+    const filePart = { inlineData: { data: fileBuffer.toString("base64"), mimeType: mimetype } };
+    const prompt = "Extrae todo el texto de este documento. Devuelve únicamente el texto plano, sin ningún formato adicional, como si lo copiaras y pegaras. No resumas nada.";
     try {
-        // 2. Llama a la API usando el modelo generativo del SDK. Es más simple y robusto.
-        const result = await generativeModel.generateContent([prompt, filePart]);
-        const response = result.response;
-        const text = response.text();
-        return text;
+        const result = await visionGenerativeModel.generateContent([prompt, filePart]);
+        return result.response.text();
     } catch (error) {
-    // ESTA LÍNEA ES LA CLAVE DE TODO
-    console.error('Error detallado de la API de Gemini:', error); 
-    
-    throw new Error('La API de Gemini no pudo procesar el archivo.');
-
+        console.error('Error detallado de la API de Gemini:', error); 
+        throw new Error('La API de Gemini no pudo procesar el archivo.');
     }
 }
 
-// CÓDIGO CORREGIDO Y LISTO PARA USAR
+// --- NUEVO: Función para describir imágenes con Gemini ---
+async function describeImageWithGemini(filePath, mimetype, originalName) {
+    console.log("Procesando imagen con Gemini Vision...");
+    const fileBuffer = fs.readFileSync(filePath);
+    const filePart = { inlineData: { data: fileBuffer.toString("base64"), mimeType: mimetype } };
+    const prompt = "Describe detalladamente esta imagen. Si contiene texto, transcríbelo. Si es un diagrama, explica lo que representa. Si es una foto, describe la escena y los objetos.";
+    try {
+        const result = await visionGenerativeModel.generateContent([prompt, filePart]);
+        return `Descripción de la imagen "${originalName}":\n${result.response.text()}`;
+    } catch (error) {
+        console.error('Error detallado de la API de Gemini Vision:', error);
+        throw new Error('La API de Gemini no pudo procesar la imagen.');
+    }
+}
 
-const supportedClientTypes = [
-    'application/pdf',
-    'text/plain'
-];
-const geminiMimeTypeMapper = {};
+//---------------------------------------------------------------------------------------
+// En server.js, junto a tus otras funciones como getEmbedding, etc.
 
+async function generateAndSaveReport(chatId) {
+try {
+        const chat = await Chat.findById(chatId);
+        if (!chat) throw new Error("Chat no encontrado para la generación del informe.");
+
+        // 1. Leer los JSON directamente desde los campos del chat
+        const jsonForm1 = chat.formulario1Data;
+        const jsonForm2 = chat.formulario2Data;
+        const jsonForm3 = chat.formulario3Data;
+
+        // Versión flexible: solo falla si no hay NINGÚN dato
+        if (!jsonForm1 && !jsonForm2 && !jsonForm3) {
+            throw new Error('No se ha subido ningún archivo de formulario para analizar.');
+        }
+
+        // 2. Construir el Mega-Prompt
+        // Convertimos los objetos JSON a string solo para inyectarlos en el prompt
+        const stringForm1 = jsonForm1 ? JSON.stringify(jsonForm1, null, 2) : '"No proporcionado."';
+        const stringForm2 = jsonForm2 ? JSON.stringify(jsonForm2, null, 2) : '"No proporcionado."';
+        const stringForm3 = jsonForm3 ? JSON.stringify(jsonForm3, null, 2) : '"No proporcionado."';
+
+        let promptTemplate = process.env.PROMPT_GENERAR_INFORME;
+        const nombreUnidad = jsonForm1?.analisisOrganizacional?.nombreUnidad || 'Unidad No Especificada';
+        const mesAnio = new Date().toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+
+        let finalPrompt = promptTemplate
+            .replace('__NOMBRE_UNIDAD__', nombreUnidad)
+            .replace('__MES_ANIO__', mesAnio.charAt(0).toUpperCase() + mesAnio.slice(1))
+            .replace('__JSON_FORM_1__', stringForm1)
+            .replace('__JSON_FORM_2__', stringForm2)
+            .replace('__JSON_FORM_3__', stringForm3);
+
+        // 3. Llamar a la IA y guardar (esta parte no cambia)
+        const result = await generativeModel.generateContent(finalPrompt);
+        const generatedReportText = result.response.text();
+
+        await Chat.findByIdAndUpdate(chatId, {
+            $set: { informeFinal: generatedReportText },
+            $push: { messages: { sender: 'ai', text: generatedReportText } }
+        });
+        
+        console.log(`[Report Gen] Informe generado y guardado para el Chat ID: ${chatId}`);
+
+    } catch (error) {
+        console.error('[Report Gen Background] Error:', error.message);
+        await Chat.findByIdAndUpdate(chatId, {
+            $push: { messages: { sender: 'bot', text: `Ocurrió un error al generar el informe: ${error.message}` } }
+        });
+    }
+}
+//---------------------------------------------------------------------------------------
 const extractTextFromFile = async (file) => {
     const filePath = file.path;
     const clientMimeType = file.mimetype;
+    const fileExt = path.extname(file.originalname).toLowerCase();
     let text = '';
 
-    // Lógica para decidir qué herramienta de extracción usar
-
-    // CASO 1: El archivo es un .docx
-    if (clientMimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-        
-        console.log("Archivo DOCX detectado. Usando 'mammoth' para extracción local...");
-        try {
-            // Usamos mammoth para convertir el .docx a texto plano
-            const result = await mammoth.extractRawText({ path: filePath });
-            text = result.value;
-            if (!text || !text.trim()) {
-                throw new Error('Mammoth no pudo extraer texto del archivo .docx.');
-            }
-        } catch (mammothError) {
-            console.error("Error con Mammoth al procesar .docx:", mammothError);
-            throw new Error('No se pudo procesar el archivo de Word.');
-        }
-
-    // CASO 2: Es un PDF o un archivo de texto plano (soportados por Gemini)
-    } else if (clientMimeType === 'application/pdf' || clientMimeType === 'text/plain') {
-        
-        console.log(`Archivo ${clientMimeType} detectado. Usando Gemini para extracción...`);
-        text = await extractTextWithGemini(filePath, clientMimeType);
-
-    // CASO 3: El tipo de archivo no está soportado
-    } else {
-        console.error(`Tipo de archivo no soportado: ${clientMimeType}`);
-        throw new Error('Tipo de archivo no soportado. Por favor, sube un .docx, .pdf o .txt');
+    // CASO 1: DOCX (mammoth)
+    if (fileExt === '.docx'){
+        console.log(`Procesando localmente (DOCX): ${file.originalname}`);
+        const result = await mammoth.extractRawText({ path: filePath });
+        text = result.value;
     }
-    
+    // CASO 2: XLSX (xlsx)
+    else if (fileExt === '.xlsx'|| fileExt === '.xls') {
+        console.log(`Procesando localmente (XLSX): ${file.originalname}`);
+        const workbook = xlsx.readFile(filePath);
+        const fullText = [];
+        workbook.SheetNames.forEach(sheetName => {
+            const worksheet = workbook.Sheets[sheetName];
+            const sheetText = xlsx.utils.sheet_to_txt(worksheet);
+            if (sheetText) fullText.push(`Contenido de la hoja "${sheetName}":\n${sheetText}`);
+        });
+        text = fullText.join('\n\n---\n\n');
+    }
+    // CASO 3: PDF (pdf-parse con fallback a Gemini)
+    else if (fileExt === '.pdf') {
+        console.log(`Procesando localmente (PDF): ${file.originalname}`);
+        try {
+            const dataBuffer = fs.readFileSync(filePath);
+            const data = await pdf(dataBuffer);
+            text = data.text;
+            if (!text || !text.trim()) throw new Error("pdf-parse no extrajo texto.");
+        } catch (error) {
+            console.warn("pdf-parse falló. Usando fallback de Gemini...");
+            text = await extractTextWithGemini(filePath, clientMimeType);
+        }
+    }
+    // CASO 4: PPTX y VSDX (Delegar al microservicio)
+    else if (fileExt === '.pptx' || fileExt === '.vsdx'|| fileExt === '.ppt' || fileExt === '.vsd'|| fileExt === '.doc' || fileExt === '.vsd') {
+        if (!CONVERSION_SERVICE_URL) throw new Error('El servicio de conversión no está configurado.');
+        try {
+            console.log(`Delegando (${fileExt.toUpperCase()}) ${file.originalname} al servicio de conversión...`);
+            const form = new FormData();
+            form.append('file', fs.createReadStream(filePath), file.originalname);
+            const response = await axios.post(CONVERSION_SERVICE_URL, form, {
+                headers: form.getHeaders(),
+                responseType: 'arraybuffer'
+            });
+            console.log('PDF recibido del servicio. Extrayendo texto...');
+            const data = await pdf(response.data);
+            text = data.text;
+        } catch (error) {
+            console.error("Error con el servicio de conversión:", error.message);
+            throw new Error('La conversión remota del archivo falló.');
+        }
+    }
+    // CASO 5: IMÁGENES
+    else if (['.jpg', '.jpeg', '.png', '.webp'].includes(fileExt) || clientMimeType.startsWith('image/')) {
+        console.log(`Procesando (Imagen): ${file.originalname}`);
+        text = await describeImageWithGemini(filePath, clientMimeType, file.originalname);
+    }
+    // CASO 6: TXT
+    else if (fileExt === '.txt' || clientMimeType === 'text/plain') {
+        console.log(`Procesando localmente (TXT): ${file.originalname}`);
+        text = fs.readFileSync(filePath, 'utf-8');
+    }
+    // CASO 7: Archivo no soportado
+    else {
+        throw new Error(`Tipo de archivo no soportado: ${fileExt} (${clientMimeType})`);
+    }
+
+    if (!text || !text.trim()) {
+        throw new Error('No se pudo extraer o generar contenido de texto del archivo.');
+    }
     return text;
 };
+
+const processAndFillForm = async (file, formType) => {
+  console.log(`[JSON Extractor] Iniciando para el formulario tipo: ${formType}`);
+
+  try {
+    const textContent = await extractTextFromFile(file);
+    if (!textContent || !textContent.trim()) {
+      throw new Error("No se pudo extraer contenido del archivo o está vacío.");
+    }
+
+    // Cargar el prompt
+    const promptKey = `GEMINI_PROMPT_${formType.toUpperCase()}`;
+    console.log(promptKey);
+    // Cargar esquema JSON
+    const schemaPath = path.join(__dirname, 'schemas', `${formType}.schema.json`);
+    const [promptTemplate, schemaFileContent] = await Promise.all([process.env[promptKey],fs.promises.readFile(schemaPath, 'utf8')]);
+        if (!promptTemplate) {
+        throw new Error(`El prompt para ${formType} no se encontró en el archivo .env`);
+    }
+
+    // Armar promp con pedazos
+    let finalPrompt = promptTemplate.replace('__JSON_SCHEMA__', schemaFileContent);
+    finalPrompt = finalPrompt.replace('__TEXT_TO_PROCESS__', textContent);
+
+    // API
+    console.log(`[JSON Extractor] Enviando prompt para ${formType} a la API...`);
+    const extractionModel = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+    const result = await extractionModel.generateContent(finalPrompt);
+    const responseText = result.response.text();
+
+    // Limpiar respuesta
+    const cleanedText = responseText.replace(/^```json\n?/, '').replace(/```$/, '');
+    
+    try {
+      const jsonData = JSON.parse(cleanedText);
+      console.log(`[JSON Extractor] ¡JSON para ${formType} parseado con éxito!`);
+      return jsonData;
+    } catch (parseError) {
+      console.error("[JSON Extractor] Error fatal: La respuesta de la IA no es un JSON válido.", parseError);
+      console.log("[JSON Extractor] Respuesta recibida de la IA:", cleanedText);
+      throw new Error("La respuesta de la IA no pudo ser parseada como JSON.");
+    }
+
+  } catch (error) {
+    console.error(`[JSON Extractor] Error durante el procesamiento del ${formType}:`, error.message);
+    throw error; 
+  }
+};
+
+
+
+
+
+
+
+
 const getEmbedding = async (text) => { const result = await embeddingModel.embedContent(text); return result.embedding.values; };
 const chunkDocument = (text, chunkSize = 1000, overlap = 200) => { const chunks = []; for (let i = 0; i < text.length; i += chunkSize - overlap) { chunks.push(text.substring(i, i + chunkSize)); } return chunks; };
 const cosineSimilarity = (vecA, vecB) => { let dotProduct = 0, magA = 0, magB = 0; for(let i=0;i<vecA.length;i++){ dotProduct += vecA[i]*vecB[i]; magA += vecA[i]*vecA[i]; magB += vecB[i]*vecB[i]; } magA = Math.sqrt(magA); magB = Math.sqrt(magB); if(magA===0||magB===0)return 0; return dotProduct/(magA*magB); };
@@ -381,20 +407,23 @@ app.delete('/api/chats/:id', protect, async (req, res) => {
     } catch (error) { res.status(500).json({ message: "Error interno al eliminar el chat." }); }
 });
 
-app.put('/api/chats/:id/title', protect, async (req, res) => {
-    const { chatId } = req.params;
+app.put('/api/chats/:id/title', protect, async (req, res) => { // <-- El parámetro se llama ':id'
+    // --- CAMBIO 1: Usa 'id' en lugar de 'chatId' ---
+    const { id } = req.params; 
     const { newTitle } = req.body;
 
     if (!newTitle || typeof newTitle !== 'string' || newTitle.trim().length === 0) {
         return res.status(400).json({ message: 'Se requiere un nuevo título válido.' });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+    // --- CAMBIO 2: Valida 'id' ---
+    if (!mongoose.Types.ObjectId.isValid(id)) { 
         return res.status(400).json({ message: 'ID de chat inválido.' });
     }
 
     try {
-        const chat = await Chat.findOne({ _id: chatId, userId: req.user._id });
+        // --- CAMBIO 3: Busca usando 'id' ---
+        const chat = await Chat.findOne({ _id: id, userId: req.user._id }); 
 
         if (!chat) {
             return res.status(404).json({ message: 'Chat no encontrado o no autorizado.' });
@@ -511,6 +540,8 @@ app.post('/api/process-document', protect, upload, async (req, res) => {
     }
 });
 
+
+
 app.post('/api/chat', protect, async (req, res) => {
     const { conversationHistory, chatId } = req.body;
     if (!chatId || !Array.isArray(conversationHistory)) {
@@ -525,52 +556,42 @@ app.post('/api/chat', protect, async (req, res) => {
 
         const userQuery = conversationHistory[conversationHistory.length - 1].parts[0].text;
 
-        // --- NUEVO: LÓGICA DE COMANDOS DE SUPERUSUARIO ---
-       if (userQuery === process.env.SUPERUSER_SECRET && !currentChat.isSuperuserMode) {
-        const updatedChat = await Chat.findByIdAndUpdate(chatId, { 
-        isSuperuserMode: true,
-        $push: { messages: { sender: 'bot', text: 'Modo Superusuario ACTIVADO. Los próximos documentos se subirán a la base de conocimiento global.' }}
-        }, { new: true });
-        res.status(200).json({ updatedChat });
-        return;
+        // --- MANEJO DE COMANDOS DE SUPERUSUARIO ---
+        if (userQuery === process.env.SUPERUSER_SECRET && !currentChat.isSuperuserMode) {
+            const updatedChat = await Chat.findByIdAndUpdate(chatId, { 
+                isSuperuserMode: true,
+                $push: { messages: { sender: 'bot', text: 'Modo Superusuario ACTIVADO.' }}
+            }, { new: true });
+            return res.status(200).json({ updatedChat });
         }
         if (userQuery === "exit" && currentChat.isSuperuserMode) {
-        const updatedChat = await Chat.findByIdAndUpdate(chatId, { 
-            isSuperuserMode: false,
-            $push: { messages: { sender: 'bot', text: 'Modo Superusuario DESACTIVADO. Volviendo al funcionamiento normal del chat.' }}
-        }, { new: true });
-        res.status(200).json({ updatedChat });
-        return;
+            const updatedChat = await Chat.findByIdAndUpdate(chatId, { 
+                isSuperuserMode: false,
+                $push: { messages: { sender: 'bot', text: 'Modo Superusuario DESACTIVADO.' }}
+            }, { new: true });
+            return res.status(200).json({ updatedChat });
         }
 
-        // --- DISPARADOR GENÉRICO PARA TAREAS DE AGENTES ESPECIALIZADOS ---
-        const activeContextName = currentChat.activeContext;
-        const activeTrigger = CONTEXT_TRIGGERS.find(t => t.contextName === activeContextName);
+        // --- GATILLO PARA GENERAR INFORME ---
+        if (userQuery.toLowerCase() === 'generar informe') {
+            const userMessage = { sender: 'user', text: userQuery };
+            const botMessage = { sender: 'bot', text: 'Entendido. Generando el informe de compatibilización. Esto puede tardar un momento...' };
+            
+            // Damos feedback inmediato al usuario
+            await Chat.findByIdAndUpdate(chatId, {
+                $push: { messages: { $each: [userMessage, botMessage] } }
+            });
 
-        // Comprobamos si el contexto activo TIENE una tarea especial (no es 'miscellaneous')
-        if (activeTrigger && activeTrigger.promptEnvVar) {
-            const userQueryEmbedding = await getEmbedding(userQuery);
-            const agentTriggerEmbedding = triggerEmbeddings[activeContextName].embedding;
-            const similarity = cosineSimilarity(userQueryEmbedding, agentTriggerEmbedding);
+            // Ejecutamos la generación en segundo plano
+            generateAndSaveReport(chatId);
 
-            // Si la intención es OTRA VEZ la del agente activo, activamos la tarea especial
-            if (similarity > SIMILARITY_THRESHOLD) {
-                await handleSpecializedAgentTask(currentChat, userQuery, res); // Llamamos a la nueva función genérica
-                return; // Termina la ejecución aquí
-            }
+            const chatForFeedback = await Chat.findById(chatId);
+            return res.status(200).json({ updatedChat: chatForFeedback });
         }
 
-        // --- SUBPROCESO 1: Intentar cambiar el contexto ---
-        const contextWasSwitched = await detectAndHandleContextSwitch(currentChat, userQuery, res);
-        if (contextWasSwitched) {
-            return; // La respuesta ya fue enviada por el subproceso, así que terminamos.
-        }
-
-        // --- SI LLEGAMOS AQUÍ, ES UN CHAT NORMAL DENTRO DEL CONTEXTO ACTUAL ---
-        
-        // --- SUBPROCESO 2: Obtener documentos del contexto activo ---
+        // --- LÓGICA DE CHAT NORMAL CON RAG ---
+        // 1. Obtener documentos relevantes (del chat y globales)
         const documentIds = getDocumentsForActiveContext(currentChat);
-        
         const globalDocs = await GlobalDocument.find({});
         const globalDocumentIds = globalDocs.map(doc => doc.documentId);
         const allSearchableIds = [...documentIds, ...globalDocumentIds];
@@ -582,21 +603,15 @@ app.post('/api/chat', protect, async (req, res) => {
             const relevantChunks = await findRelevantChunksAcrossDocuments(queryEmbedding, allSearchableIds);
             
             if (relevantChunks.length > 0) {
-                const contextString = `CONTEXTO EXTRAÍDO DE DOCUMENTOS DE "${currentChat.activeContext}":\n---\n` + relevantChunks.join("\n---\n");
+                const contextString = `CONTEXTO EXTRAÍDO DE DOCUMENTOS:\n---\n` + relevantChunks.join("\n---\n");
                 contents.unshift({ role: 'user', parts: [{ text: contextString }] });
             }
         }
 
-        // --- SUBPROCESO 3: Generar respuesta de la IA y guardar en BD ---
-        let botText;
-        try {
-            const chatSession = generativeModel.startChat({ history: contents.slice(0, -1) });
-            const result = await chatSession.sendMessage(userQuery);
-            botText = result.response.text();
-        } catch (geminiError) {
-            console.error("Error con la API de Gemini:", geminiError);
-            return res.status(504).json({ message: `Error con la IA: ${geminiError.message}` });
-        }
+        // 2. Generar respuesta y guardar en BD
+        const chatSession = generativeModel.startChat({ history: contents.slice(0, -1) });
+        const result = await chatSession.sendMessage(userQuery);
+        const botText = result.response.text();
 
         const updatedChat = await Chat.findByIdAndUpdate(chatId, {
             $push: { messages: { $each: [
@@ -608,10 +623,160 @@ app.post('/api/chat', protect, async (req, res) => {
         res.status(200).json({ updatedChat });
 
     } catch (mainError) {
-        console.error("Error inesperado en el servidor:", mainError);
+        console.error("Error inesperado en la ruta /api/chat:", mainError);
         res.status(500).json({ message: "Error inesperado en el servidor." });
     }
 });
+
+app.post('/api/extract-json', protect, upload, async (req, res) => {
+    // 1. Obtenemos los datos del body, como los envía el frontend
+    const { formType, chatId } = req.body;
+
+    // --- Validaciones (igual que antes) ---
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+        return res.status(400).json({ message: 'ID de Chat inválido.' });
+    }
+    // ... resto de tus validaciones ...
+    if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ message: 'No se han subido archivos.' });
+    }
+     if (req.files.length > 1) {
+        return res.status(400).json({ message: 'Por favor, sube solo un archivo a la vez.' });
+    }
+    if (!formType || !['form1', 'form2', 'form3'].includes(formType)) {
+        return res.status(400).json({ message: 'Tipo de formulario inválido.' });
+    }
+
+    const file = req.files[0];
+
+    try {
+        console.log(`[API] Extrayendo JSON de ${file.originalname} para el Chat ID: ${chatId}`);
+        
+        // 1. Extraemos el JSON (esto no cambia)
+        const filledJson = await processAndFillForm(file, formType);
+
+        // 2. Lógica de Guardado en MongoDB
+        // Creamos el nombre del campo dinámicamente (ej. 'formulario1Data')
+        const updateField = `formulario${formType.slice(-1)}Data`; 
+
+        const updatedChat = await Chat.findByIdAndUpdate(
+            chatId,
+            {
+                // Usamos $set para establecer o reemplazar el contenido del campo
+                $set: { [updateField]: filledJson }, 
+                // También añadimos un mensaje de confirmación al chat
+                $push: {
+                    messages: {
+                        sender: 'bot',
+                        text: `Datos de "${file.originalname}" (${formType}) procesados y guardados en la base de datos.`
+                    }
+                }
+            },
+            { new: true } // Para que nos devuelva el documento ya actualizado
+        );
+
+        if (!updatedChat) {
+            return res.status(404).json({ message: "No se encontró el Chat para actualizar." });
+        }
+
+        // 3. Devolvemos la respuesta que el frontend espera
+        res.status(200).json({ updatedChat: updatedChat });
+
+    } catch (error) {
+        console.error(`[API] Error en la ruta /api/extract-json:`, error);
+        res.status(500).json({ message: 'Error en el servidor durante la extracción del JSON.', error: error.message });
+    } finally {
+        // El 'finally' se mantiene para borrar el archivo temporal de /uploads
+        if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+        }-
+    }
+});
+
+// En server.js, después de la ruta /api/extract-json
+
+// ========================================================================
+// --- RUTA PARA GENERAR EL INFORME DE COMPATIBILIZACIÓN ---
+// ========================================================================
+app.post('/api/generate-report', protect, async (req, res) => {
+    // El frontend enviará el ID del chat en el que se está trabajando
+    const { chatId } = req.body;
+
+    if (!chatId || !mongoose.Types.ObjectId.isValid(chatId)) {
+        return res.status(400).json({ message: 'Se requiere un ID de chat válido.' });
+    }
+
+    try {
+        console.log(`[Report Gen] Iniciando generación de informe para el Chat ID: ${chatId}`);
+        const chat = await Chat.findById(chatId);
+
+        if (!chat) {
+            return res.status(404).json({ message: 'Chat no encontrado.' });
+        }
+
+        // 1. Encontrar las rutas a los archivos JSON que hemos guardado previamente.
+        // Asumimos que los JSON se guardan en el contexto 'consolidadoFacultades'.
+        const documentos = chat.consolidadoFacultades || [];
+        
+        const findJsonPath = (formType) => {
+            const doc = documentos.find(d => d.metadata?.formType === formType);
+            // La ruta guardada es absoluta en el servidor de Render, así que es segura de usar.
+            return doc ? doc.metadata.jsonPath : null;
+        };
+
+        const pathForm1 = findJsonPath('form1');
+        const pathForm2 = findJsonPath('form2');
+        const pathForm3 = findJsonPath('form3');
+
+        if (!pathForm1 || !pathForm2 || !pathForm3) {
+            return res.status(400).json({ message: 'Faltan uno o más archivos de formulario procesados en este chat para generar el informe.' });
+        }
+
+        // 2. Leer el contenido de los archivos JSON desde el disco del servidor.
+        const [jsonForm1, jsonForm2, jsonForm3] = await Promise.all([
+            fs.promises.readFile(pathForm1, 'utf8'),
+            fs.promises.readFile(pathForm2, 'utf8'),
+            fs.promises.readFile(pathForm3, 'utf8')
+        ]);
+        
+        // 3. Construir el "Mega-Prompt" usando la plantilla del .env.
+        let promptTemplate = process.env.PROMPT_GENERAR_INFORME;
+        const nombreUnidad = JSON.parse(jsonForm1)?.analisisOrganizacional?.nombreUnidad || 'Unidad No Especificada';
+        const mesAnio = new Date().toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+
+        let finalPrompt = promptTemplate
+            .replace('__NOMBRE_UNIDAD__', nombreUnidad)
+            .replace('__MES_ANIO__', mesAnio.charAt(0).toUpperCase() + mesAnio.slice(1))
+            .replace('__JSON_FORM_1__', jsonForm1)
+            .replace('__JSON_FORM_2__', jsonForm2)
+            .replace('__JSON_FORM_3__', jsonForm3);
+
+        // 4. Llamar a la IA para generar el informe.
+        console.log("[Report Gen] Enviando prompt final a Gemini...");
+        const result = await generativeModel.generateContent(finalPrompt);
+        const generatedReportText = result.response.text();
+        
+        // 5. Guardar el informe en la BD y añadirlo como un mensaje nuevo.
+        const updatedChat = await Chat.findByIdAndUpdate(
+            chatId,
+            {
+                $set: { informeFinal: generatedReportText }, // Guardamos el informe en su campo dedicado
+                $push: { messages: { sender: 'ai', text: generatedReportText } } // Y lo añadimos a los mensajes para que aparezca en el chat
+            },
+            { new: true } // Para que nos devuelva el documento ya actualizado
+        );
+        
+        console.log(`[Report Gen] Informe guardado y añadido como mensaje para el Chat ID: ${chatId}`);
+        
+        // 6. Devolver el chat actualizado, que es la respuesta que el frontend ya sabe manejar.
+        res.status(200).json({ updatedChat: updatedChat });
+
+    } catch (error) {
+        console.error('[Report Gen] Error generando el informe:', error);
+        res.status(500).json({ message: 'Error en el servidor al generar el informe.', error: error.message });
+    }
+});
+
 
 // --- INICIAR SERVIDOR ---
 app.listen(PORT, () => console.log(`Servidor backend corriendo en http://localhost:${PORT}`));
