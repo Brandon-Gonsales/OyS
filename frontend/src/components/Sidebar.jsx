@@ -1,6 +1,17 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 // Iconos de Material-UI
+<<<<<<< HEAD
+import AddIcon from '@mui/icons-material/Add';
+import DeleteIcon from '@mui/icons-material/Delete';
+import SearchIcon from '@mui/icons-material/Search';
+import MenuIcon from '@mui/icons-material/Menu';
+
+
+import CloseIcon from '@mui/icons-material/Close';
+import UserProfile from './UserProfile';
+import { useAuth } from '../context/AuthContext';
+=======
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SearchIcon from "@mui/icons-material/Search";
@@ -8,6 +19,7 @@ import MenuIcon from "@mui/icons-material/Menu";
 import CloseIcon from "@mui/icons-material/Close";
 import UserProfile from "./UserProfile";
 import { useAuth } from "../context/AuthContext";
+>>>>>>> c21e0060f193135a0cd95a9ab91b4fd93b93253f
 
 function Sidebar({
   allChats,

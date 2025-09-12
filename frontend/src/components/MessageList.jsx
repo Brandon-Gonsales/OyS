@@ -3,10 +3,26 @@ import remarkGfm from "remark-gfm";
 import { useRef, useEffect } from "react";
 export const MessageList = ({ conversation, loading, onCopy }) => {
   const messagesEndRef = useRef(null);
-
+  const scrollToBottom = () => {
+    // Usar setTimeout para asegurar que el DOM se actualice antes del scroll
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ 
+        behavior: "smooth",
+        block: "end",
+        inline: "nearest"
+      });
+    }, 100);
+  };
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    scrollToBottom();
   }, [conversation, loading]);
+
+  // Scroll adicional cuando cambia el loading state
+  useEffect(() => {
+    if (loading) {
+      scrollToBottom();
+    }
+  }, [loading]);
 
   return (
     <div className="flex flex-col gap-6 text-light-two">
@@ -31,14 +47,14 @@ export const MessageList = ({ conversation, loading, onCopy }) => {
                 <div
                   className={`leading-relaxed ${
                     isUser
-                      ? "text-light-bg dark:text-dark-bg"
+                      ? "text-light-bg"
                       : "text-light-primary dark:text-dark-primary"
                   }`}
                 >
                   {isUser ? (
                     <div className="text-base sm:text-lg">{msg.text}</div>
                   ) : (
-                    <div>
+                    <div className=" overflow-hidden">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {msg.text}
                       </ReactMarkdown>
@@ -50,6 +66,7 @@ export const MessageList = ({ conversation, loading, onCopy }) => {
           </div>
         );
       })}
+      <div ref={messagesEndRef} style={{ height: '1px' }} />
     </div>
   );
 };

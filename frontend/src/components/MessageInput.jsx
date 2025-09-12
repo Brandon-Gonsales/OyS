@@ -1,94 +1,34 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, {
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  useImperativeHandle,
+} from "react";
 import { useDropzone } from "react-dropzone";
+import ImageIcon from "@mui/icons-material/Image";
+import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
+import CloseIcon from "@mui/icons-material/Close";
+import AttachFileIcon from "@mui/icons-material/AttachFile";
+import AddIcon from "@mui/icons-material/Add";
+import SendIcon from "@mui/icons-material/Send";
+import DescriptionIcon from "@mui/icons-material/Description";
+import { Check, Upload } from "@mui/icons-material";
+import OfflineBoltIcon from "@mui/icons-material/OfflineBolt";
 
-// Iconos SVG personalizados
-const AttachFileIcon = () => (
-  <svg
-    className="w-5 h-5"
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-    />
-  </svg>
-);
-
-const CloseIcon = () => (
-  <svg
-    className="w-4 h-4"
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M6 18L18 6M6 6l12 12"
-    />
-  </svg>
-);
-
-const PlusIcon = () => (
-  <svg
-    className="w-5 h-5"
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M12 4v16m8-8H4"
-    />
-  </svg>
-);
-
-const SendIcon = () => (
-  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-  </svg>
-);
-
-const ImageIcon = () => (
-  <svg
-    className="w-8 h-8"
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-    />
-  </svg>
-);
-
-const DocumentIcon = () => (
-  <svg
-    className="w-8 h-8"
-    fill="none"
-    stroke="currentColor"
-    viewBox="0 0 24 24"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-    />
-  </svg>
-);
-
-function MessageInput({ onSendMessage, loading }) {
+function MessageInput(
+  {
+    onSendMessage,
+    loading,
+    error,
+    disableGlobalDrop,
+    selectedAgentId,
+    selectedForm,
+    onChangeSelectedForm,
+    onChangeCompatibilizar,
+  },
+  ref
+) {
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState([]);
   const [showOptions, setShowOptions] = useState(false);
@@ -96,6 +36,18 @@ function MessageInput({ onSendMessage, loading }) {
   const fileInputRef = useRef(null);
   const optionsRef = useRef(null);
   const textareaRef = useRef(null);
+
+  useImperativeHandle(ref, () => ({
+    addFilesFromGlobal: (newFiles) => {
+      setFiles((prev) => [...prev, ...newFiles]);
+    },
+  }));
+  // Resetear el form seleccionado cuando cambien las condiciones
+  useEffect(() => {
+    if (selectedAgentId !== "consolidadoFacultades" || files.length === 0) {
+      onChangeSelectedForm("form1");
+    }
+  }, [selectedAgentId, files.length, onChangeSelectedForm]);
 
   const onDrop = useCallback((acceptedFiles) => {
     if (acceptedFiles.length > 0) {
@@ -137,14 +89,14 @@ function MessageInput({ onSendMessage, loading }) {
     onDragLeave: () => setIsDragOver(false),
     onDropAccepted: () => setIsDragOver(false),
     onDropRejected: () => setIsDragOver(false),
+    disabled: disableGlobalDrop,
   });
 
   const handleSend = () => {
     if (!message.trim() && files.length === 0) return;
+    const filesToSend = files.map((fileObj) => fileObj.file);
 
-    // Por ahora enviamos solo el primer archivo para mantener compatibilidad
-    const firstFile = files.length > 0 ? files[0].file : null;
-    onSendMessage(message.trim(), firstFile);
+    onSendMessage(message.trim(), filesToSend);
 
     setMessage("");
     setFiles([]);
@@ -194,7 +146,7 @@ function MessageInput({ onSendMessage, loading }) {
 
   const getFileIcon = (fileType) => {
     if (fileType.startsWith("image/")) return <ImageIcon />;
-    return <DocumentIcon />;
+    return <InsertDriveFileIcon />;
   };
 
   const formatFileSize = (bytes) => {
@@ -211,6 +163,20 @@ function MessageInput({ onSendMessage, loading }) {
       textareaRef.current.style.height =
         Math.min(textareaRef.current.scrollHeight, 120) + "px";
     }
+  };
+  // Determinar si mostrar el selector de formularios
+  const showCompatibilizar = selectedAgentId === "consolidadoFacultades";
+  const showFormSelector =
+    selectedAgentId === "consolidadoFacultades" && files.length > 0;
+  const formOptions = [
+    { value: "form1", label: "Formulario 1" },
+    { value: "form2", label: "Formulario 2" },
+    { value: "form3", label: "Formulario 3" },
+    { value: "extra", label: "Extra" },
+  ];
+
+  const handleCompatibilizar = () => {
+    onChangeCompatibilizar();
   };
 
   return (
@@ -266,6 +232,33 @@ function MessageInput({ onSendMessage, loading }) {
           ))}
         </div>
       )}
+      {/* Selector de formularios - Solo visible cuando es necesario */}
+      {showFormSelector && (
+        <div className="bg-light-bg_h dark:bg-dark-bg_h rounded-lg border border-light-border dark:border-dark-border/30 p-4 w-fit">
+          <div className="flex items-center gap-2 text-xs text-light-primary dark:text-dark-primary mb-2">
+            <DescriptionIcon size={12} />
+            <span>Seleccionar Formulario:</span>
+          </div>
+          <div className="flex gap-1 md:gap-2">
+            {formOptions.map((option) => (
+              <button
+                key={option.value + "_mini"}
+                onClick={() => onChangeSelectedForm(option.value)}
+                className={`px-2 py-1 text-xs rounded-md border transition-all ${
+                  selectedForm === option.value
+                    ? "border-light-border dark:border-dark-border bg-light-secondary dark:bg-dark-secondary text-light-bg dark:text-dark-primary"
+                    : "border-light-border_h dark:border-dark-border_h text-light-primary_h dark:text-dark-primary_h hover:border-light-border_h dark:hover:border-dark-border_h"
+                }`}
+              >
+                {selectedForm === option.value && (
+                  <Check size={10} className="inline mr-1" strokeWidth={3} />
+                )}
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Input principal con drag & drop */}
       <div className="relative">
@@ -298,7 +291,6 @@ function MessageInput({ onSendMessage, loading }) {
             <div className="relative" ref={optionsRef}>
               <button
                 onClick={() => setShowOptions(!showOptions)}
-                disabled={loading}
                 className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200 ${
                   showOptions
                     ? "bg-light-secondary text-white shadow-md"
@@ -310,29 +302,53 @@ function MessageInput({ onSendMessage, loading }) {
                     showOptions ? "rotate-45" : ""
                   }`}
                 >
-                  <PlusIcon />
+                  <AddIcon />
                 </div>
               </button>
 
               {/* Menú de opciones */}
               {showOptions && (
-                <div className="absolute bottom-full left-0 mb-2 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden min-w-[180px] z-30">
+                <div className="absolute bottom-full left-0 mb-4 bg-light-bg_h dark:bg-dark-bg_h rounded-lg shadow-lg border border-light-border dark:border-dark-border overflow-hidden min-w-[200px] z-30">
                   <button
                     onClick={handleFileSelect}
-                    className="w-full px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-3 transition-colors"
+                    className="w-full px-3 py-2.5 text-left hover:bg-light-bg dark:hover:bg-dark-bg flex items-center gap-2.5 transition-colors border-b border-gray-100 dark:border-gray-700 last:border-b-0"
                   >
-                    <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <AttachFileIcon />
+                    <div className="w-7 h-7 flex items-center justify-center flex-shrink-0">
+                      <Upload
+                        size={14}
+                        className="text-light-primary dark:text-dark-primary"
+                      />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      <p className="text-sm font-medium text-light-primary dark:text-dark-primary">
                         Subir archivo
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Arrastra o selecciona
                       </p>
                     </div>
                   </button>
+
+                  {showCompatibilizar && (
+                    <button
+                      onClick={handleCompatibilizar}
+                      type="button"
+                      disabled={loading}
+                      className="w-full px-3 py-2.5 text-left hover:bg-light-bg dark:hover:bg-dark-bg flex items-center gap-2.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <div className="w-7 h-7 flex items-center justify-center flex-shrink-0">
+                        <OfflineBoltIcon
+                          size={14}
+                          className="text-light-primary dark:text-dark-primary"
+                        />
+                      </div>
+                      <div className="flex-1 flex flex-row min-w-0">
+                        <p className="text-sm font-medium text-light-primary dark:text-dark-primary">
+                          Compatibilizar
+                        </p>
+                        {loading && (
+                          <div className="animate-spin rounded-full h-5 w-5 ml-3 border-b-2 border-current"></div>
+                        )}
+                      </div>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
